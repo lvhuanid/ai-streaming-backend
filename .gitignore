@@ -1,3 +1,10 @@
 h.md
 .env
 .venv
+
+# macOS
+.DS_Store
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
