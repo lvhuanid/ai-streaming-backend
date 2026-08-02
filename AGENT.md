@@ -99,6 +99,18 @@ uv run uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 - **Cause**: Nginx or reverse proxy buffering SSE responses.
 - **Fix**: Ensure response headers contain `X-Accel-Buffering: no` and `Cache-Control: no-cache` (already set in `chat.py`).
 
+### 5.3 RAG Engine: HuggingFace Download Fails (`SSL: WRONG_VERSION_NUMBER`)
+- **Cause**: `rag-engine/` loads `BAAI/bge-large-zh-v1.5` and `BAAI/bge-reranker-base` via `sentence-transformers`, which downloads from `huggingface.co`. In mainland China the TLS handshake is intercepted and fails with `[SSL: WRONG_VERSION_NUMBER]`.
+- **Gotcha — import order**: `HF_ENDPOINT` must be set **before** any library that imports `huggingface_hub` (sentence-transformers / transformers / langchain-text-splitters). `main.py`'s `from src.chunker import ...` pulls in langchain, which imports `huggingface_hub` — so setting the env var only in `config/settings.py` is too late.
+- **Fix (already applied)**:
+  - `rag-engine/main.py` sets `os.environ.setdefault("HF_ENDPOINT", "https://hf-mirror.com")` at the very top, before all other imports.
+  - `rag-engine/config/settings.py` also sets it (covers other entry points such as tests).
+  - `rag-engine/src/retriever.py` imports `config.settings` **before** `sentence_transformers`.
+
+### 5.4 RAG Engine: `'QdrantClient' object has no attribute 'search'`
+- **Cause**: `qdrant-client >= 1.10` removed `QdrantClient.search()`. The pinned environment uses 1.18.0.
+- **Fix (already applied)**: `rag-engine/src/retriever.py` switched to `client.query_points(collection_name=..., query=<vector>, limit=...)` and reads results from `response.points` (each point exposes `.payload`, `.id`, `.score`).
+
 ---
 
 ## 6. Verification & Automated Testing Commands
@@ -119,3 +131,39 @@ curl -N -i -X POST http://localhost:8000/api/v1/chat/completions \
 # Verify that the server log shows:
 # "Client connection disconnected! Terminating upstream stream immediately."
 ```
+
+---
+
+## 7. RAG Engine Subproject (`rag-engine/`)
+
+A standalone hybrid-retrieval demo (BM25 + dense vector + Cross-Encoder rerank), independent of the SSE backend. Lives in its own subdirectory with its own `requirements.txt`.
+
+### 7.1 Pipeline
+```text
+[ sample_doc.md ]
+   │
+   ▼
+[ CascadeDocumentChunker ]  ── Markdown header split → recursive char split
+   │
+   ▼
+[ HybridSearchRerankEngine ]
+   ├── BM25 (rank_bm25 + jieba)         ─┐
+   ├── Qdrant dense search (BGE-large)  ─┤── RRF fusion ──► Cross-Encoder rerank (BGE-reranker) ──► Top-K
+   └── in-memory Qdrant (`:memory:`)    ─┘
+```
+
+### 7.2 Key Files
+| Path | Description |
+| :--- | :--- |
+| `rag-engine/main.py` | Entry point: chunk sample doc → index → run a demo hybrid search. Sets `HF_ENDPOINT` before any other import (see 5.3). |
+| `rag-engine/src/chunker.py` | `CascadeDocumentChunker` — Markdown cascade chunker via `langchain-text-splitters`. |
+| `rag-engine/src/retriever.py` | `HybridSearchRerankEngine` — BM25 + Qdrant + BGE rerank. Uses `query_points()` (see 5.4). |
+| `rag-engine/src/models.py` | Pydantic models: `DocumentChunk`, `ChunkMetadata`, `SearchResult`. |
+| `rag-engine/config/settings.py` | Model names, Qdrant host (`:memory:`), retrieval params. Also sets `HF_ENDPOINT`. |
+
+### 7.3 Run
+```bash
+cd rag-engine
+uv run main.py
+```
+First run downloads ~2.4 GB of models (`bge-large-zh-v1.5` + `bge-reranker-base`) through the `https://hf-mirror.com` endpoint (see 5.3). Subsequent runs use the local HuggingFace cache.

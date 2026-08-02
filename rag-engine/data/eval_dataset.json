@@ -1,0 +1,14 @@
+[
+  {
+    "query": "Qdrant 建议使用什么距离度量标准？",
+    "expected_chunk_id": "tech_doc_001_0"
+  },
+  {
+    "query": "如何解决代码和 ERR_502_BAD_GATEWAY 搜不到的问题？",
+    "expected_chunk_id": "tech_doc_001_1"
+  },
+  {
+    "query": "Cross-Attention 重排序模型有什么优势？",
+    "expected_chunk_id": "tech_doc_001_2"
+  }
+]
