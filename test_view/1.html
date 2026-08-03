@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8" />
+    <title>Three.js FPS MVP</title>
+    <style>
+        body { margin: 0; overflow: hidden; }
+        #blocker {
+            position: fixed;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            z-index: 1;
+        }
+        #instructions {
+            color: white;
+            font-size: 24px;
+            text-align: center;
+            user-select: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="blocker">
+        <div id="instructions">点击进入<br/>WASD 移动 | 鼠标环顾</div>
+    </div>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.163.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.163.0/examples/jsm/"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+        import { PointerLockControls } from 'three/addons/controls/PointerLockControls.js';
+
+        // --- 场景 / 相机 / 渲染器 ---
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x88ccff);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 1.7, 5);
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        // --- 控制器 ---
+        const controls = new PointerLockControls(camera, document.body);
+        const blocker = document.getElementById('blocker');
+
+        blocker.addEventListener('click', () => controls.lock());
+
+        controls.addEventListener('lock', () => { blocker.style.display = 'none'; });
+        controls.addEventListener('unlock', () => { blocker.style.display = 'flex'; });
+
+        // --- 地面 ---
+        const groundGeo = new THREE.PlaneGeometry(20, 20);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x3a7d44, side: THREE.DoubleSide });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // --- 参照物 ---
+        const boxGeo = new THREE.BoxGeometry(1, 1, 1);
+        const boxMat = new THREE.MeshStandardMaterial({ color: 0xff5733 });
+        const box = new THREE.Mesh(boxGeo, boxMat);
+        box.position.set(0, 0.5, -5);
+        box.castShadow = true;
+        scene.add(box);
+
+        // --- 灯光 ---
+        const ambient = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambient);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 1.5);
+        dirLight.position.set(5, 10, 7);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- 键盘状态 ---
+        const keys = { w: false, a: false, s: false, d: false };
+        document.addEventListener('keydown', (e) => {
+            switch (e.code) {
+                case 'KeyW': keys.w = true; e.preventDefault(); break;
+                case 'KeyA': keys.a = true; e.preventDefault(); break;
+                case 'KeyS': keys.s = true; e.preventDefault(); break;
+                case 'KeyD': keys.d = true; e.preventDefault(); break;
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            switch (e.code) {
+                case 'KeyW': keys.w = false; e.preventDefault(); break;
+                case 'KeyA': keys.a = false; e.preventDefault(); break;
+                case 'KeyS': keys.s = false; e.preventDefault(); break;
+                case 'KeyD': keys.d = false; e.preventDefault(); break;
+            }
+        });
+
+        // --- 武器系统 ---
+        // 右手刀（红色圆柱+锥体组合）
+        const swordGroup = new THREE.Group();
+        const blade = new THREE.Mesh(
+            new THREE.BoxGeometry(0.08, 0.6, 0.02),
+            new THREE.MeshStandardMaterial({ color: 0xcccccc, metalness: 0.8 })
+        );
+        blade.position.y = 0.3;
+        swordGroup.add(blade);
+        const handle = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.04, 0.04, 0.12),
+            new THREE.MeshStandardMaterial({ color: 0x8b4513 })
+        );
+        handle.position.y = -0.06;
+        swordGroup.add(handle);
+        swordGroup.position.set(0.25, -0.1, -0.3); // 右前下方
+        camera.add(swordGroup);
+
+        // 左手盾（半透明圆盘+边缘）
+        const shieldGroup = new THREE.Group();
+        const disc = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.3, 0.3, 0.04, 16),
+            new THREE.MeshStandardMaterial({ color: 0x1e90ff, transparent: true, opacity: 0.7 })
+        );
+        disc.rotation.x = Math.PI / 2;
+        shieldGroup.add(disc);
+        const rim = new THREE.Mesh(
+            new THREE.TorusGeometry(0.3, 0.03, 8, 16),
+            new THREE.MeshStandardMaterial({ color: 0xffd700 })
+        );
+        rim.rotation.x = Math.PI / 2;
+        shieldGroup.add(rim);
+        shieldGroup.position.set(-0.3, -0.1, -0.25); // 左前下方
+        camera.add(shieldGroup);
+
+        // 状态
+        let isSwinging = false;
+        let swingTime = 0;
+        const SWING_DURATION = 0.2; // 秒
+        let isDefending = false;
+        const SHIELD_DEFEND_POS = new THREE.Vector3(-0.1, 0.0, -0.45);
+        const SHIELD_IDLE_POS = new THREE.Vector3(-0.3, -0.1, -0.25);
+
+
+        // --- 动画循环 ---
+        const speed = 4.0;
+        const clock = new THREE.Clock();
+
+        function animate() {
+            const delta = Math.min(clock.getDelta(), 0.05);
+
+            if (controls.isLocked) {
+                const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+                forward.y = 0;
+                forward.normalize();
+                const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion);
+                right.y = 0;
+                right.normalize();
+
+                // 放在 controls.isLocked 判断之后，但在 render 之前
+// 挥剑动画
+if (isSwinging) {
+    swingTime += delta;
+    const progress = Math.min(swingTime / SWING_DURATION, 1);
+    // 剑绕X轴旋转 -90° 再回正，使用正弦缓动
+    const angle = -Math.PI / 2 * Math.sin(progress * Math.PI);
+    swordGroup.rotation.x = angle;
+    if (progress >= 1) {
+        isSwinging = false;
+        swordGroup.rotation.x = 0;
+    }
+}
+// 盾牌防御位置
+if (isDefending) {
+    shieldGroup.position.lerp(SHIELD_DEFEND_POS, delta * 12);
+} else {
+    shieldGroup.position.lerp(SHIELD_IDLE_POS, delta * 12);
+}
+
+                const moveVec = new THREE.Vector3();
+                if (keys.w) moveVec.add(forward);
+                if (keys.s) moveVec.sub(forward);
+                if (keys.d) moveVec.add(right);
+                if (keys.a) moveVec.sub(right);
+                if (moveVec.lengthSq() > 0) {
+                    moveVec.normalize().multiplyScalar(speed * delta);
+                    controls.moveForward(moveVec.z);
+                    controls.moveRight(moveVec.x);
+                }
+            }
+
+            renderer.render(scene, camera);
+            requestAnimationFrame(animate);
+        }
+        animate();
+
+        document.addEventListener('mousedown', (e) => {
+    if (!controls.isLocked) return;
+    if (e.button === 0 && !isSwinging) { // 左键
+        isSwinging = true;
+        swingTime = 0;
+    }
+    if (e.button === 2) { // 右键
+        isDefending = true;
+        e.preventDefault();
+    }
+});
+document.addEventListener('mouseup', (e) => {
+    if (e.button === 2) {
+        isDefending = false;
+        e.preventDefault();
+    }
+});
+document.addEventListener('contextmenu', (e) => e.preventDefault());
+
+        // --- 窗口自适应 ---
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
